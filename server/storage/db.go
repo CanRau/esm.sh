@@ -1,20 +1,18 @@
 package storage
 
 import (
-	"errors"
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/ije/gox/utils"
 )
 
-var ErrorNotFound = errors.New("record not found")
-
 type Store map[string]string
 
 type DB interface {
-	Open(config string) (conn DBConn, err error)
+	Open(config string, options url.Values) (conn DBConn, err error)
 }
 
 type DBConn interface {
@@ -26,11 +24,14 @@ type DBConn interface {
 
 var dbs = sync.Map{}
 
-func OpenDB(dbUrl string) (DBConn, error) {
-	name, config := utils.SplitByFirstByte(dbUrl, ':')
+func OpenDB(url string) (DBConn, error) {
+	name, addr := utils.SplitByFirstByte(url, ':')
 	db, ok := dbs.Load(name)
 	if ok {
-		return db.(DB).Open(config)
+		root, options, err := parseConfigUrl(addr)
+		if err == nil {
+			return db.(DB).Open(root, options)
+		}
 	}
 	return nil, fmt.Errorf("unregistered db '%s'", name)
 }

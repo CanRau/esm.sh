@@ -14,13 +14,12 @@ import (
 
 	logx "github.com/ije/gox/log"
 	"github.com/ije/rex"
-	"github.com/oschwald/maxminddb-golang"
 )
 
 var (
 	config  *Config
 	node    *Node
-	mmdbr   *maxminddb.Reader
+	cache   storage.Cache
 	db      storage.DBConn
 	fs      storage.FSConn
 	log     *logx.Logger
@@ -31,7 +30,6 @@ var (
 type Config struct {
 	yarnCacheDir       string
 	cdnDomain          string
-	cdnDomainChina     string
 	unpkgDomain        string
 	cjsLexerServerPort uint16
 }
@@ -41,31 +39,31 @@ func Serve(efs *embed.FS) {
 	embedFS = efs
 
 	var (
-		port           int
-		httpsPort      int
-		dbUrl          string
-		fsUrl          string
-		cdnDomain      string
-		cdnDomainChina string
-		unpkgDomain    string
-		etcDir         string
-		nodejsPrefix   string
-		yarnCacheDir   string
-		logLevel       string
-		logDir         string
-		noCompress     bool
-		isDev          bool
+		port             int
+		httpsPort        int
+		cacheUrl         string
+		dbUrl            string
+		fsUrl            string
+		cdnDomain        string
+		unpkgDomain      string
+		etcDir           string
+		nodejsInstallDir string
+		yarnCacheDir     string
+		logLevel         string
+		logDir           string
+		noCompress       bool
+		isDev            bool
 	)
 
 	flag.IntVar(&port, "port", 80, "http server port")
 	flag.IntVar(&httpsPort, "https-port", 0, "https(autotls) server port, default is disabled")
+	flag.StringVar(&cacheUrl, "cache", "", "cache connection Url")
 	flag.StringVar(&dbUrl, "db", "", "database connection Url")
 	flag.StringVar(&fsUrl, "fs", "", "file system connection Url")
 	flag.StringVar(&cdnDomain, "cdn-domain", "", "cdn domain")
-	flag.StringVar(&cdnDomainChina, "cdn-domain-china", "", "cdn domain for china")
 	flag.StringVar(&unpkgDomain, "unpkg-domain", "", "proxy domain for unpkg.com")
-	flag.StringVar(&nodejsPrefix, "nodejs-prefix", "", "nodejs installation dir (default: [etc-dir]/nodejs)")
 	flag.StringVar(&etcDir, "etc-dir", "/usr/local/etc/esmd", "the etc dir to store data")
+	flag.StringVar(&nodejsInstallDir, "nodejs-install-dir", "", "nodejs installation dir (default: [etc-dir]/nodejs)")
 	flag.StringVar(&yarnCacheDir, "yarn-cache-dir", "", "the cache dir for `yarn add`")
 	flag.StringVar(&logLevel, "log-level", "info", "log level")
 	flag.StringVar(&logDir, "log-dir", "/var/log/esmd", "the log dir to store server logs")
@@ -81,7 +79,9 @@ func Serve(efs *embed.FS) {
 		if port != 80 {
 			cdnDomain = fmt.Sprintf("localhost:%d", port)
 		}
-		cdnDomainChina = ""
+	}
+	if cacheUrl == "" {
+		cacheUrl = "memory:main"
 	}
 	if dbUrl == "" {
 		dbUrl = fmt.Sprintf("postdb:%s", path.Join(etcDir, "esm.db"))
@@ -94,7 +94,6 @@ func Serve(efs *embed.FS) {
 	config = &Config{
 		yarnCacheDir:       yarnCacheDir,
 		cdnDomain:          cdnDomain,
-		cdnDomainChina:     cdnDomainChina,
 		unpkgDomain:        unpkgDomain,
 		cjsLexerServerPort: uint16(8088),
 	}
@@ -112,10 +111,10 @@ func Serve(efs *embed.FS) {
 	}
 	log.SetLevelByName(logLevel)
 
-	if nodejsPrefix == "" {
-		nodejsPrefix = path.Join(etcDir, "nodejs")
+	if nodejsInstallDir == "" {
+		nodejsInstallDir = path.Join(etcDir, "nodejs")
 	}
-	node, err = checkNode(nodejsPrefix)
+	node, err = checkNode(nodejsInstallDir)
 	if err != nil {
 		log.Fatalf("check nodejs env: %v", err)
 	}
@@ -124,23 +123,19 @@ func Serve(efs *embed.FS) {
 	storage.SetLogger(log)
 	storage.SetIsDev(isDev)
 
-	fs, err = storage.OpenFS(fsUrl)
+	cache, err = storage.OpenCache(cacheUrl)
 	if err != nil {
-		log.Fatalf("storage: %v", err)
+		log.Fatalf("init storage(cache,%s): %v", cacheUrl, err)
 	}
 
 	db, err = storage.OpenDB(dbUrl)
 	if err != nil {
-		log.Fatalf("storage: %v", err)
+		log.Fatalf("init storage(db,%s): %v", dbUrl, err)
 	}
 
-	mmdata, err := embedFS.ReadFile("embed/china_ip_list.mmdb")
-	if err == nil {
-		mmdbr, err = maxminddb.FromBytes(mmdata)
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Debugf("china_ip_list.mmdb applied: %+v", mmdbr.Metadata)
+	fs, err = storage.OpenFS(fsUrl)
+	if err != nil {
+		log.Fatalf("init storage(fs,%s): %v", fsUrl, err)
 	}
 
 	var accessLogger *logx.Logger

@@ -147,22 +147,22 @@ type Node struct {
 	npmRegistry string
 }
 
-func checkNode(nodePrefix string) (node *Node, err error) {
+func checkNode(installDir string) (node *Node, err error) {
 	var installed bool
 CheckNodejs:
 	version, major, err := getNodejsVersion()
 	if err != nil || major < minNodejsVersion {
 		PATH := os.Getenv("PATH")
-		nodeBinDir := path.Join(nodePrefix, "bin")
+		nodeBinDir := path.Join(installDir, "bin")
 		if !strings.Contains(PATH, nodeBinDir) {
 			os.Setenv("PATH", fmt.Sprintf("%s%c%s", nodeBinDir, os.PathListSeparator, PATH))
 			goto CheckNodejs
 		} else if !installed {
-			err = os.RemoveAll(nodePrefix)
+			err = os.RemoveAll(installDir)
 			if err != nil {
 				return
 			}
-			err = installNodejs(nodePrefix, nodejsLatestLTS)
+			err = installNodejs(installDir, nodejsLatestLTS)
 			if err != nil {
 				return
 			}
@@ -238,18 +238,12 @@ func getPackageInfo(wd string, name string, version string) (info NpmPackage, su
 	}
 
 	version = resolveVersion(version)
-	isFullVersion := regFullVersion.MatchString(version)
 
-	store, modtime, err := db.Get(fmt.Sprintf("npm:%s@%s", name, version))
-	if err == nil {
-		if json.Unmarshal([]byte(store["package"]), &info) == nil {
-			if !isFullVersion && int64(modtime.Unix())+refreshDuration <= time.Now().Unix() {
-				go cachePackageInfo(name, version) // async update cache
-			}
-			return
-		}
+	data, err := cache.Get(fmt.Sprintf("npm:%s@%s", name, version))
+	if err == nil && json.Unmarshal(data, &info) == nil {
+		return
 	}
-	if err != nil && err != storage.ErrorNotFound {
+	if err != nil && err != storage.ErrNotFound && err != storage.ErrExpired {
 		log.Error("db:", err)
 	}
 
@@ -320,9 +314,14 @@ func cachePackageInfo(name string, version string) (info NpmPackage, err error) 
 	log.Debugf("get npm package(%s@%s) info from %s in %v", name, info.Version, node.npmRegistry, time.Now().Sub(start))
 
 	// cache data
-	db.Put(
+	var ttl time.Duration = 0
+	if !isFullVersion {
+		ttl = refreshDuration * time.Second
+	}
+	cache.Set(
 		fmt.Sprintf("npm:%s@%s", name, version),
-		storage.Store{"package": string(utils.MustEncodeJSON(info))},
+		utils.MustEncodeJSON(info),
+		ttl,
 	)
 	return
 }
